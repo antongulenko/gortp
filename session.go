@@ -238,11 +238,15 @@ func (rs *Session) StartSession() (err error) {
 			format := PayloadFormatMap[int(str.PayloadType())]
 			if format == nil {
 				rs.RtcpSessionBandwidth += 64000. / 20.0 // some standard: 5% of a 64000 bit connection
-			}
-			// Assumption: fixed codec used, 8 byte per sample, one channel
-			rs.RtcpSessionBandwidth += float64(format.ClockRate) * 8.0 / 20.
+            } else {
+                // Assumption: fixed codec used, 8 byte per sample, one channel
+                rs.RtcpSessionBandwidth += float64(format.ClockRate) * 8.0 / 20.
+            }
 		}
 	}
+    if rs.RtcpSessionBandwidth == 0.0 {
+        rs.RtcpSessionBandwidth += 64000. / 20.0
+    }
 	rs.avrgPacketLength = float64(len(rs.streamsOut)*senderInfoLen + reportBlockLen + 20) // 28 for SDES
 
 	// initial call: members, senders, RTCP bandwidth,   packet length,     weSent, initial
