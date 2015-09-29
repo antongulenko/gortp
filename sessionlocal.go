@@ -28,11 +28,6 @@ import (
 )
 
 const (
-	dataReceiveChanLen = 3
-	ctrlEventChanLen   = 3
-)
-
-const (
 	maxNumberOutStreams = 5
 	maxNumberInStreams  = 30
 )

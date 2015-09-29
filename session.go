@@ -23,10 +23,14 @@ package rtp
  */
 
 import (
+	"github.com/antongulenko/RTP/stats"
+	"log"
 	"net"
 	"sync"
 	"time"
 )
+
+var _ = log.Fatal
 
 // Session contols and manages the resources and actions of a RTP session.
 //
@@ -57,6 +61,9 @@ type Session struct {
 	transportEndUpper TransportEnd
 	transportWrite    TransportWrite
 	transportRecv     TransportRecv
+
+	DroppedDataPackets *stats.Stats
+	DroppedCtrlPackets *stats.Stats
 }
 
 // Remote stores a remote addess in a transport independent way.
@@ -157,6 +164,9 @@ func NewSession(tpw TransportWrite, tpr TransportRecv) *Session {
 	tpr.SetCallUpper(rs)
 	tpr.SetEndChannel(rs.transportEnd)
 
+	rs.DroppedDataPackets = stats.NewStats("Dropped RTP data packets")
+	rs.DroppedCtrlPackets = stats.NewStats("Dropped RTP ctrl packets")
+
 	return rs
 }
 
@@ -238,15 +248,15 @@ func (rs *Session) StartSession() (err error) {
 			format := PayloadFormatMap[int(str.PayloadType())]
 			if format == nil {
 				rs.RtcpSessionBandwidth += 64000. / 20.0 // some standard: 5% of a 64000 bit connection
-            } else {
-                // Assumption: fixed codec used, 8 byte per sample, one channel
-                rs.RtcpSessionBandwidth += float64(format.ClockRate) * 8.0 / 20.
-            }
+			} else {
+				// Assumption: fixed codec used, 8 byte per sample, one channel
+				rs.RtcpSessionBandwidth += float64(format.ClockRate) * 8.0 / 20.
+			}
 		}
 	}
-    if rs.RtcpSessionBandwidth == 0.0 {
-        rs.RtcpSessionBandwidth += 64000. / 20.0
-    }
+	if rs.RtcpSessionBandwidth == 0.0 {
+		rs.RtcpSessionBandwidth += 64000. / 20.0
+	}
 	rs.avrgPacketLength = float64(len(rs.streamsOut)*senderInfoLen + reportBlockLen + 20) // 28 for SDES
 
 	// initial call: members, senders, RTCP bandwidth,   packet length,     weSent, initial
@@ -293,6 +303,14 @@ func (rs *Session) NewDataPacket(stamp uint32) *DataPacket {
 	return str.newDataPacket(stamp)
 }
 
+func (rs *Session) dataPacketDropped() {
+	rs.DroppedDataPackets.AddPacketNow()
+}
+
+func (rs *Session) ctrlPacketDropped() {
+	rs.DroppedCtrlPackets.AddPacketNow()
+}
+
 // NewDataPacketForStream creates a new RTP packet suitable for use with the specified output stream.
 //
 // This method returns an initialized RTP packet that contains the correct SSRC, sequence
@@ -312,8 +330,8 @@ func (rs *Session) NewDataPacketForStream(streamIndex uint32, stamp uint32) *Dat
 // An application shall listen on this channel to get received RTP data packets.
 // If the channel is full then the RTP receiver discards the data packets.
 //
-func (rs *Session) CreateDataReceiveChan() DataReceiveChan {
-	rs.dataReceiveChan = make(DataReceiveChan, dataReceiveChanLen)
+func (rs *Session) CreateDataReceiveChan(bufferLength int) DataReceiveChan {
+	rs.dataReceiveChan = make(DataReceiveChan, bufferLength)
 	return rs.dataReceiveChan
 }
 
@@ -330,8 +348,8 @@ func (rs *Session) RemoveDataReceiveChan() {
 // An application shall listen on this channel to get control events.
 // If the channel is full then the RTCP receiver does not send control events.
 //
-func (rs *Session) CreateCtrlEventChan() CtrlEventChan {
-	rs.ctrlEventChan = make(CtrlEventChan, ctrlEventChanLen)
+func (rs *Session) CreateCtrlEventChan(bufferLength int) CtrlEventChan {
+	rs.ctrlEventChan = make(CtrlEventChan, bufferLength)
 	return rs.ctrlEventChan
 }
 
@@ -430,6 +448,7 @@ func (rs *Session) ListenOnTransports() (err error) {
 func (rs *Session) OnRecvData(rp *DataPacket) bool {
 
 	if !rp.IsValid() {
+		rs.dataPacketDropped()
 		rp.FreePacket()
 		return false
 	}
@@ -450,6 +469,7 @@ func (rs *Session) OnRecvData(rp *DataPacket) bool {
 				rs.sendDataCtrlEvent(MaxNumInStreamReachedData, ssrc, 0)
 				rp.FreePacket()
 				rs.streamsMapMutex.Unlock()
+				rs.dataPacketDropped()
 				return false
 			}
 			rs.streamsIn[rs.streamInIndex] = str
@@ -463,6 +483,7 @@ func (rs *Session) OnRecvData(rp *DataPacket) bool {
 				rs.sendDataCtrlEvent(WrongStreamStatusData, ssrc, rs.streamInIndex-1)
 				rp.FreePacket()
 				rs.streamsMapMutex.Unlock()
+				rs.dataPacketDropped()
 				return false
 
 			}
@@ -481,6 +502,7 @@ func (rs *Session) OnRecvData(rp *DataPacket) bool {
 			// must be discarded due to collision or loop or invalid source
 			rs.sendDataCtrlEvent(StreamCollisionLoopData, ssrc, rs.streamInIndex-1)
 			rp.FreePacket()
+			rs.dataPacketDropped()
 			return false
 		}
 	}
@@ -488,6 +510,7 @@ func (rs *Session) OnRecvData(rp *DataPacket) bool {
 	case rs.dataReceiveChan <- rp: // forwarded packet, that's all folks
 	default:
 		rp.FreePacket() // either channel full or not created - free packet
+		rs.dataPacketDropped()
 	}
 	return true
 }
@@ -503,11 +526,13 @@ func (rs *Session) OnRecvData(rp *DataPacket) bool {
 func (rs *Session) OnRecvCtrl(rp *CtrlPacket) bool {
 
 	if !rs.rtcpServiceActive {
+		rs.ctrlPacketDropped()
 		return true
 	}
 
 	if pktType := rp.Type(0); pktType != RtcpSR && pktType != RtcpRR && pktType != RtcpPsfb && pktType != RtcpRtpfb {
 		rp.FreePacket()
+		rs.ctrlPacketDropped()
 		return false
 	}
 	// Check here if SRTCP is enabled for the SSRC of the packet - a stream attribute
@@ -522,6 +547,7 @@ func (rs *Session) OnRecvCtrl(rp *CtrlPacket) bool {
 		case RtcpSR:
 			rrCnt := rp.Count(offset)
 			if offset+pktLen > len(rp.Buffer()) {
+				rs.ctrlPacketDropped()
 				return false
 			}
 			// Always check sender's SSRC first in case of RR or SR
@@ -556,6 +582,7 @@ func (rs *Session) OnRecvCtrl(rp *CtrlPacket) bool {
 
 		case RtcpRR:
 			if offset+pktLen > len(rp.Buffer()) {
+				rs.ctrlPacketDropped()
 				return false
 			}
 			// Always check sender's SSRC first in case of RR or SR
@@ -586,6 +613,7 @@ func (rs *Session) OnRecvCtrl(rp *CtrlPacket) bool {
 
 		case RtcpSdes:
 			if offset+pktLen > len(rp.Buffer()) {
+				rs.ctrlPacketDropped()
 				return false
 			}
 			sdesChunkCnt := rp.Count(offset)
@@ -610,6 +638,7 @@ func (rs *Session) OnRecvCtrl(rp *CtrlPacket) bool {
 
 		case RtcpBye:
 			if offset+pktLen > len(rp.Buffer()) {
+				rs.ctrlPacketDropped()
 				return false
 			}
 			// Currently the method suports only one SSRC per BYE packet. To enhance this we need
@@ -641,6 +670,7 @@ func (rs *Session) OnRecvCtrl(rp *CtrlPacket) bool {
 			offset += pktLen
 		case RtcpRtpfb:
 			if offset+pktLen > len(rp.Buffer()) {
+				rs.ctrlPacketDropped()
 				return false
 			}
 			str, _, _ := rs.rtcpSenderCheck(rp, offset)
@@ -651,6 +681,7 @@ func (rs *Session) OnRecvCtrl(rp *CtrlPacket) bool {
 			offset += pktLen
 		case RtcpPsfb:
 			if offset+pktLen > len(rp.Buffer()) {
+				rs.ctrlPacketDropped()
 				return false
 			}
 			str, _, _ := rs.rtcpSenderCheck(rp, offset)
@@ -665,9 +696,12 @@ func (rs *Session) OnRecvCtrl(rp *CtrlPacket) bool {
 
 		}
 	}
-	select {
-	case rs.ctrlEventChan <- ctrlEvArr: // send control event
-	default:
+	if rs.ctrlEventChan != nil {
+		select {
+		case rs.ctrlEventChan <- ctrlEvArr: // send control event
+		default:
+			rs.ctrlPacketDropped()
+		}
 	}
 	// re-compute average packet size. Don't re-compute RTCP interval time, will be done on next RTCP report
 	// interval. The timing is not affected that much by delaying the interval re-computation.

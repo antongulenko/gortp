@@ -23,7 +23,7 @@ import (
 	"fmt"
 	"net"
 	"time"
-	
+
 	"github.com/antongulenko/gortp"
 )
 
@@ -146,7 +146,7 @@ func receivePacketRemote() {
 
 func receiveCtrlLocal() {
 	// Create and store the control event channel.
-	ctrlReceiver := rsLocal.CreateCtrlEventChan()
+	ctrlReceiver := rsLocal.CreateCtrlEventChan(3)
 	for {
 		select {
 		case evSlice := <-ctrlReceiver: // get an event
@@ -172,7 +172,7 @@ func receiveCtrlLocal() {
 
 func receiveCtrlRemote() {
 	// Create and store the control event channel.
-	ctrlReceiver := rsRemote.CreateCtrlEventChan()
+	ctrlReceiver := rsRemote.CreateCtrlEventChan(3)
 	for {
 		select {
 		case evSlice := <-ctrlReceiver: // get an event
