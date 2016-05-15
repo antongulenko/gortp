@@ -23,8 +23,8 @@ import (
 	"net"
 	"time"
 
-	"github.com/hashicorp/go.net/internal/iana"
-	"github.com/hashicorp/go.net/ipv4"
+	"github.com/cloudvm/gortp/iana"
+	"golang.org/x/net/ipv4"
 )
 
 // RtpTransportUDP implements the interfaces RtpTransportRecv and RtpTransportWrite for RTP transports.

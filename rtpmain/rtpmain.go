@@ -108,7 +108,7 @@ func sendRemoteToLocal() {
 
 func receivePacketLocal() {
 	// Create and store the data receive channel.
-	dataReceiver := rsLocal.CreateDataReceiveChan()
+	dataReceiver := rsLocal.CreateDataReceiveChan(128)
 	var cnt int
 
 	for {
@@ -127,7 +127,7 @@ func receivePacketLocal() {
 
 func receivePacketRemote() {
 	// Create and store the data receive channel.
-	dataReceiver := rsRemote.CreateDataReceiveChan()
+	dataReceiver := rsRemote.CreateDataReceiveChan(128)
 	var cnt int
 
 	for {
